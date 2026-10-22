@@ -1,0 +1,86 @@
+name: News Agent
+
+on:
+  schedule:
+    # ۴ نوبت در روز به وقت تهران (UTC+3:30): 09:00 ، 13:00 ، 17:00 ، 21:00
+    # GitHub ممکن است اجرای زمان‌بندی‌شده را چند دقیقه (گاهی بیشتر) به تأخیر بیندازد.
+    - cron: "30 5,9,13,17 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "اجرای آزمایشی (بدون ارسال به تلگرام و بدون تغییر پایگاه داده)"
+        type: boolean
+        default: true
+
+# کمترین مجوز لازم: فقط نوشتن در مخزن برای commit پایگاه داده
+permissions:
+  contents: write
+
+# فقط یک اجرا در هر لحظه (تنها نویسنده‌ی پایگاه داده)
+concurrency:
+  group: news-agent
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Run agent
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_CHANNEL_ID: ${{ vars.TELEGRAM_CHANNEL_ID || '@AiNewsPulses' }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          # انتشار فقط با تنظیم صریح متغیر ENABLE_PUBLISHING=true در Settings > Variables روشن می‌شود
+          ENABLE_PUBLISHING: ${{ vars.ENABLE_PUBLISHING || 'false' }}
+          DAILY_POST_LIMIT: ${{ vars.DAILY_POST_LIMIT || '4' }}
+          MAX_POSTS_PER_RUN: ${{ vars.MAX_POSTS_PER_RUN || '1' }}
+          MIN_QUALITY_SCORE: ${{ vars.MIN_QUALITY_SCORE || '65' }}
+          ALLOW_ARTICLE_IMAGES: ${{ vars.ALLOW_ARTICLE_IMAGES || 'false' }}
+          IMAGE_ALLOWED_DOMAINS: ${{ vars.IMAGE_ALLOWED_DOMAINS || '' }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          TIMEZONE: Asia/Tehran
+          DRY_RUN_FLAG: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '--dry-run' || '' }}
+        run: python main.py $DRY_RUN_FLAG
+
+      # حتی اگر مرحله‌ی قبل خطا داد، پایگاه داده ذخیره می‌شود؛ وگرنه ممکن است خبرِ منتشرشده فراموش شود.
+      - name: Commit database
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -z "$(git status --porcelain data/)" ]; then
+            echo "No database changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git commit -m "chore: update news database"
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "::warning::push rejected (attempt ${attempt}); trying to rebase"
+            git fetch origin "${GITHUB_REF_NAME}"
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+              git rebase --abort
+              echo "::error::Git conflict while saving the database. The database was NOT overwritten; resolve manually."
+              exit 1
+            fi
+          done
+          echo "::error::Could not push the database after 3 attempts."
+          exit 1
