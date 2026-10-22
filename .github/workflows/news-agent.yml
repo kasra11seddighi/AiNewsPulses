@@ -35,9 +35,9 @@ jobs:
       - name: Run agent in dry-run mode
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
-          TELEGRAM_BOT_TOKEN: ""
-          TELEGRAM_CHANNEL_ID: ""
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ vars.TELEGRAM_CHANNEL_ID }}
           ENABLE_PUBLISHING: "false"
           DAILY_POST_LIMIT: "1"
           MAX_POSTS_PER_RUN: "1"
