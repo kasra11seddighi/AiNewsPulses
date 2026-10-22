@@ -2,6 +2,8 @@ name: News Agent
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "30 5 * * *"
 
 permissions:
   contents: read
@@ -38,7 +40,7 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ vars.TELEGRAM_CHANNEL_ID }}
-          ENABLE_PUBLISHING: "false"
+          ENABLE_PUBLISHING: "true"
           DAILY_POST_LIMIT: "1"
           MAX_POSTS_PER_RUN: "1"
           MIN_QUALITY_SCORE: "65"
@@ -47,4 +49,4 @@ jobs:
           IMAGE_ALLOWED_DOMAINS: ""
           LOG_LEVEL: INFO
           TIMEZONE: Asia/Tehran
-        run: python main.py --dry-run
+        run: python main.py
