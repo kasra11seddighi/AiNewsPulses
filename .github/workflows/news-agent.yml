@@ -48,7 +48,7 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ vars.TELEGRAM_CHANNEL_ID }}
           ENABLE_PUBLISHING: "true"
           DAILY_POST_LIMIT: "10"
-          MAX_POSTS_PER_RUN: "1"
+          MAX_POSTS_PER_RUN: "2"
           MIN_QUALITY_SCORE: "65"
           MIN_ARTICLE_TEXT_CHARS: "800"
           ALLOW_ARTICLE_IMAGES: "false"
