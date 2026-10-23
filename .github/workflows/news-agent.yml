@@ -47,7 +47,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ vars.TELEGRAM_CHANNEL_ID }}
           ENABLE_PUBLISHING: "true"
-          DAILY_POST_LIMIT: "3"
+          DAILY_POST_LIMIT: "10"
           MAX_POSTS_PER_RUN: "1"
           MIN_QUALITY_SCORE: "65"
           MIN_ARTICLE_TEXT_CHARS: "800"
