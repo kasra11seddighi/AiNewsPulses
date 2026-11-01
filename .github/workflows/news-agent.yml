@@ -4,9 +4,16 @@ name: News Agent
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 4 * * *"
-    - cron: "30 10 * * *"
-    - cron: "30 19 * * *"
+    - cron: "0 0 * * *"
+    - cron: "30 2 * * *"
+    - cron: "0 5 * * *"
+    - cron: "30 7 * * *"
+    - cron: "0 10 * * *"
+    - cron: "30 12 * * *"
+    - cron: "0 15 * * *"
+    - cron: "30 17 * * *"
+    - cron: "0 20 * * *"
+    - cron: "30 22 * * *"
 
 permissions:
   contents: write
