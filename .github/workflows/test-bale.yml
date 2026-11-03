@@ -1,3 +1,4 @@
+```yaml
 name: Test Bale Bot
 
 on:
@@ -18,6 +19,7 @@ jobs:
           import json
           import urllib.request
           import urllib.error
+          import urllib.parse
 
           token = os.environ["BALE_BOT_TOKEN"]
           channel_id = os.environ["BALE_CHANNEL_ID"]
@@ -33,10 +35,12 @@ jobs:
               try:
                   with urllib.request.urlopen(request, timeout=20) as response:
                       data = json.loads(response.read().decode("utf-8"))
+
               except urllib.error.HTTPError as error:
                   raise SystemExit(
                       f"{method} failed. HTTP status: {error.code}"
                   )
+
               except Exception as error:
                   raise SystemExit(
                       f"{method} failed. Error type: {type(error).__name__}"
@@ -44,11 +48,13 @@ jobs:
 
               if not data.get("ok"):
                   raise SystemExit(
-                      f"{method} failed: {data.get('description', 'Unknown API error')}"
+                      f"{method} failed: "
+                      f"{data.get('description', 'Unknown API error')}"
                   )
 
               return data["result"]
 
+          # 1. Test bot token
           print("Testing bot token...")
 
           bot = call_api("getMe")
@@ -56,6 +62,7 @@ jobs:
           print("Bot connection: OK")
           print("Bot username:", bot.get("username", "Unknown"))
 
+          # 2. Test channel access
           print("\nTesting channel access...")
 
           chat = call_api(
@@ -68,5 +75,46 @@ jobs:
           print("Channel title:", chat.get("title", "Unknown"))
           print("Channel username:", chat.get("username", "Unknown"))
 
+          # 3. Test message publishing
+          print("\nTesting message publishing...")
+
+          url = f"https://tapi.bale.ai/bot{token}/sendMessage"
+
+          payload = {
+              "chat_id": channel_id,
+              "text": "✅ تست اتصال ربات بله با موفقیت انجام شد."
+          }
+
+          request = urllib.request.Request(
+              url,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  result = json.loads(response.read().decode("utf-8"))
+
+          except urllib.error.HTTPError as error:
+              raise SystemExit(
+                  f"Message publishing failed. HTTP: {error.code}"
+              )
+
+          except Exception as error:
+              raise SystemExit(
+                  f"Message publishing failed: {type(error).__name__}"
+              )
+
+          if not result.get("ok"):
+              raise SystemExit(
+                  "Message publishing failed: "
+                  f"{result.get('description', 'Unknown error')}"
+              )
+
+          print("Message publishing: OK")
+          print("Message ID:", result["result"].get("message_id"))
+
           print("\nBale API test completed successfully.")
           PY
+```
