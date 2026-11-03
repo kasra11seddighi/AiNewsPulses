@@ -42,8 +42,8 @@ from writer import (
 
 log = get_logger("main")
 
-EXTRACT_LIMIT = 10
-MAX_CANDIDATES = 6
+EXTRACT_LIMIT = 30
+MAX_CANDIDATES = 20
 WRITE_ATTEMPTS = 2
 PRE_SCORE_MARGIN = 15
 
