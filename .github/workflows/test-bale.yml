@@ -1,0 +1,72 @@
+name: Test Bale Bot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-bale:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test Bale API
+        env:
+          BALE_BOT_TOKEN: ${{ secrets.BALE_BOT_TOKEN }}
+          BALE_CHANNEL_ID: ${{ vars.BALE_CHANNEL_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import urllib.request
+          import urllib.error
+
+          token = os.environ["BALE_BOT_TOKEN"]
+          channel_id = os.environ["BALE_CHANNEL_ID"]
+
+          if not token or not channel_id:
+              raise SystemExit("Missing Bale credentials.")
+
+          def call_api(method):
+              url = f"https://tapi.bale.ai/bot{token}/{method}"
+
+              request = urllib.request.Request(url)
+
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      data = json.loads(response.read().decode("utf-8"))
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(
+                      f"{method} failed. HTTP status: {error.code}"
+                  )
+              except Exception as error:
+                  raise SystemExit(
+                      f"{method} failed. Error type: {type(error).__name__}"
+                  )
+
+              if not data.get("ok"):
+                  raise SystemExit(
+                      f"{method} failed: {data.get('description', 'Unknown API error')}"
+                  )
+
+              return data["result"]
+
+          print("Testing bot token...")
+
+          bot = call_api("getMe")
+
+          print("Bot connection: OK")
+          print("Bot username:", bot.get("username", "Unknown"))
+
+          print("\nTesting channel access...")
+
+          chat = call_api(
+              "getChat?chat_id=" + urllib.parse.quote(channel_id)
+          )
+
+          print("Channel access: OK")
+          print("Channel ID:", chat.get("id"))
+          print("Channel type:", chat.get("type"))
+          print("Channel title:", chat.get("title", "Unknown"))
+          print("Channel username:", chat.get("username", "Unknown"))
+
+          print("\nBale API test completed successfully.")
+          PY
