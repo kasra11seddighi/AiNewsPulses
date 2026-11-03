@@ -3,7 +3,7 @@ from config import Settings
 
 def test_safe_defaults():
     s = Settings.from_env({})
-    assert s.enable_publishing is False and s.daily_post_limit == 4 and s.max_posts_per_run == 1
+    assert s.enable_publishing is False and s.daily_post_limit == 10 and s.max_posts_per_run == 1
     assert s.min_quality_score == 65 and s.allow_article_images is False and s.timezone == "Asia/Tehran"
     assert s.publishing_active() is False
 
@@ -22,7 +22,7 @@ def test_publishing_needs_explicit_flag_credentials_and_no_dry_run():
 
 
 def test_daily_limit_is_capped_and_invalid_numbers_fall_back():
-    assert Settings.from_env({"DAILY_POST_LIMIT": "99"}).daily_post_limit == 4
+    assert Settings.from_env({"DAILY_POST_LIMIT": "99"}).daily_post_limit == 10
     assert Settings.from_env({"MIN_QUALITY_SCORE": "abc"}).min_quality_score == 65
 
 
