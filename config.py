@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
 CHANNEL_HANDLE = "@AiNewsPulses"
-HARD_MAX_DAILY_POSTS = 4  # سقف مطلق؛ حتی با تنظیم بالاتر رعایت می‌شود
+HARD_MAX_DAILY_POSTS = 10  # سقف مطلق؛ حتی با تنظیم بالاتر رعایت می‌شود
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 # هشتگ هر دسته (دقیقاً یک هشتگ در ابتدای هر پست)
