@@ -1,4 +1,4 @@
-```yaml
+
 name: Test Bale Bot
 
 on:
@@ -117,4 +117,3 @@ jobs:
 
           print("\nBale API test completed successfully.")
           PY
-```
