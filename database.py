@@ -1,7 +1,9 @@
 """مدیریت SQLite: سابقه خبرها، وضعیت انتشار و سقف روزانه.
 
-نکته: journal_mode=DELETE است تا پایگاه داده همیشه یک فایل واحد بماند (برای commit در Git).
+نکته: journal_mode=DELETE است تا پایگاه داده همیشه یک فایل واحد بماند.
+ستون‌های بله با migration افزایشی اضافه می‌شوند و اطلاعات قبلی حفظ می‌شود.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -10,7 +12,16 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from logger import redact
-from models import (DISCOVERED, DRAFTED, FAILED, PUBLISHED, PUBLISHING, REJECTED, Article)
+from models import (
+    DISCOVERED,
+    DRAFTED,
+    FAILED,
+    PUBLISHED,
+    PUBLISHING,
+    REJECTED,
+    Article,
+)
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS articles (
@@ -29,10 +40,14 @@ CREATE TABLE IF NOT EXISTS articles (
     telegram_message_id INTEGER,
     last_error TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status);
+
+CREATE INDEX IF NOT EXISTS idx_articles_status
+ON articles(status);
 """
 
 MAX_FAILED_ATTEMPTS = 3
+MAX_BALE_ATTEMPTS = 3
+BALE_MAX_AGE_HOURS = 48
 
 
 class DatabaseError(Exception):
@@ -47,15 +62,63 @@ def iso(dt: Optional[datetime] = None) -> str:
 class NewsDB:
     def __init__(self, path):
         self.path = str(path)
+
         try:
             if self.path != ":memory:":
                 Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+
             self.conn = sqlite3.connect(self.path, timeout=30)
             self.conn.row_factory = sqlite3.Row
+
             self.conn.execute("PRAGMA journal_mode=DELETE")
             self.conn.executescript(SCHEMA)
+
+            self._migrate_bale_columns()
+
         except (sqlite3.Error, OSError) as exc:
-            raise DatabaseError(f"cannot open database: {type(exc).__name__}") from None
+            raise DatabaseError(
+                f"cannot open database: {type(exc).__name__}"
+            ) from None
+
+    def _migrate_bale_columns(self):
+        """اضافه کردن ستون‌های بله بدون حذف یا بازسازی اطلاعات قبلی."""
+
+        columns = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(articles)"
+            ).fetchall()
+        }
+
+        migrations = {
+            "bale_status": "TEXT",
+            "bale_message_id": "INTEGER",
+            "bale_published_at": "TEXT",
+            "bale_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "bale_started_at": "TEXT",
+            "bale_last_error": "TEXT",
+        }
+
+        try:
+            with self.conn:
+                for column, definition in migrations.items():
+                    if column not in columns:
+                        self.conn.execute(
+                            f"ALTER TABLE articles "
+                            f"ADD COLUMN {column} {definition}"
+                        )
+
+                self.conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_articles_bale_status
+                    ON articles(bale_status)
+                    """
+                )
+
+        except sqlite3.Error as exc:
+            raise DatabaseError(
+                f"database migration error: {type(exc).__name__}"
+            ) from None
 
     def __enter__(self):
         return self
@@ -71,92 +134,425 @@ class NewsDB:
 
     def _run(self, sql: str, params: Iterable = ()) -> sqlite3.Cursor:
         try:
-            with self.conn:  # commit/rollback اتمیک
+            with self.conn:
                 return self.conn.execute(sql, tuple(params))
+
         except sqlite3.Error as exc:
-            raise DatabaseError(f"database error: {type(exc).__name__}: {exc}") from None
+            raise DatabaseError(
+                f"database error: {type(exc).__name__}: {exc}"
+            ) from None
 
     @staticmethod
     def _err(error: Optional[str]) -> Optional[str]:
         return redact(error)[:500] if error else None
 
     # ---------- خواندن ----------
+
     def get(self, canonical_url: str) -> Optional[dict]:
-        row = self._run("SELECT * FROM articles WHERE canonical_url=?", (canonical_url,)).fetchone()
+        row = self._run(
+            "SELECT * FROM articles WHERE canonical_url=?",
+            (canonical_url,),
+        ).fetchone()
+
         return dict(row) if row else None
 
     def should_skip(self, canonical_url: str) -> bool:
-        """خبری که منتشر شده، در حال انتشار، رد شده یا بارها شکست خورده دوباره پردازش نمی‌شود."""
+        """خبر منتشرشده، در حال انتشار، ردشده یا دارای شکست‌های متعدد رد می‌شود."""
+
         row = self.get(canonical_url)
+
         if not row:
             return False
+
         if row["status"] in (PUBLISHED, PUBLISHING, REJECTED):
             return True
-        return row["status"] == FAILED and row["attempts"] >= MAX_FAILED_ATTEMPTS
 
-    def recent_titles(self, days: int = 7, now: Optional[datetime] = None) -> list:
-        since = iso((now or datetime.now(timezone.utc)) - timedelta(days=days))
+        return (
+            row["status"] == FAILED
+            and row["attempts"] >= MAX_FAILED_ATTEMPTS
+        )
+
+    def recent_titles(
+        self,
+        days: int = 7,
+        now: Optional[datetime] = None,
+    ) -> list:
+        since = iso(
+            (now or datetime.now(timezone.utc))
+            - timedelta(days=days)
+        )
+
         rows = self._run(
-            "SELECT title FROM articles WHERE status IN (?,?) AND "
-            "COALESCE(telegram_published_at, publishing_started_at, fetched_at) >= ?",
+            """
+            SELECT title
+            FROM articles
+            WHERE status IN (?,?)
+            AND COALESCE(
+                telegram_published_at,
+                publishing_started_at,
+                fetched_at
+            ) >= ?
+            """,
             (PUBLISHED, PUBLISHING, since),
         ).fetchall()
-        return [r["title"] for r in rows]
+
+        return [row["title"] for row in rows]
 
     def count_consumed_since(self, since: datetime) -> int:
-        """تعداد پست‌های امروز؛ وضعیت مبهم (publishing) محتاطانه شمرده می‌شود."""
-        s = iso(since)
+        """تعداد پست‌های امروز؛ وضعیت مبهم نیز محتاطانه شمرده می‌شود."""
+
+        timestamp = iso(since)
+
         row = self._run(
-            "SELECT COUNT(*) AS n FROM articles WHERE "
-            "(status=? AND telegram_published_at>=?) OR (status=? AND publishing_started_at>=?)",
-            (PUBLISHED, s, PUBLISHING, s),
+            """
+            SELECT COUNT(*) AS n
+            FROM articles
+            WHERE
+                (status=? AND telegram_published_at>=?)
+                OR
+                (status=? AND publishing_started_at>=?)
+            """,
+            (PUBLISHED, timestamp, PUBLISHING, timestamp),
         ).fetchone()
+
         return int(row["n"])
 
     def ambiguous(self) -> list:
-        rows = self._run("SELECT canonical_url, title, publishing_started_at, last_error "
-                         "FROM articles WHERE status=?", (PUBLISHING,)).fetchall()
-        return [dict(r) for r in rows]
+        rows = self._run(
+            """
+            SELECT
+                canonical_url,
+                title,
+                publishing_started_at,
+                last_error
+            FROM articles
+            WHERE status=?
+            """,
+            (PUBLISHING,),
+        ).fetchall()
 
-    # ---------- نوشتن ----------
-    def upsert_discovered(self, art: Article) -> None:
-        self._run(
-            "INSERT INTO articles (canonical_url,url,title,source,published_at,fetched_at,status) "
-            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_url) DO NOTHING",
-            (art.canonical_url, art.url, art.title[:500], art.source_name,
-             iso(art.published_at) if art.published_at else None, iso(art.fetched_at), DISCOVERED),
+        return [dict(row) for row in rows]
+
+    # ---------- صف بله ----------
+
+    def bale_pending(
+        self,
+        now: Optional[datetime] = None,
+        limit: int = 20,
+        max_age_hours: int = BALE_MAX_AGE_HOURS,
+    ) -> list:
+        """خبرهای آماده ارسال یا شکست‌خورده قطعی را از صف بله برمی‌گرداند."""
+
+        current_time = now or datetime.now(timezone.utc)
+        cutoff = iso(
+            current_time - timedelta(hours=max_age_hours)
         )
 
-    def set_status(self, canonical_url: str, status: str, *, score: Optional[float] = None,
-                   draft: Optional[str] = None, error: Optional[str] = None) -> None:
-        """تغییر وضعیت؛ هرگز خبرِ published/publishing را تغییر نمی‌دهد."""
-        self._run(
-            "UPDATE articles SET status=?, score=COALESCE(?,score), draft=COALESCE(?,draft), "
-            "last_error=? WHERE canonical_url=? AND status NOT IN (?,?)",
-            (status, score, draft, self._err(error), canonical_url, PUBLISHED, PUBLISHING),
+        rows = self._run(
+            """
+            SELECT *
+            FROM articles
+            WHERE
+                status=?
+                AND fetched_at>=?
+                AND (
+                    bale_status='pending'
+                    OR (
+                        bale_status='failed'
+                        AND bale_attempts<?
+                    )
+                )
+            ORDER BY fetched_at ASC
+            LIMIT ?
+            """,
+            (
+                PUBLISHED,
+                cutoff,
+                MAX_BALE_ATTEMPTS,
+                max(1, int(limit)),
+            ),
+        ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    def begin_bale_publishing(
+        self,
+        canonical_url: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Claim اتمیک خبر برای ارسال به بله."""
+
+        current_time = now or datetime.now(timezone.utc)
+        cutoff = iso(
+            current_time - timedelta(hours=BALE_MAX_AGE_HOURS)
         )
 
-    def begin_publishing(self, canonical_url: str, draft: str, now: Optional[datetime] = None) -> bool:
         cur = self._run(
-            "UPDATE articles SET status=?, draft=?, publishing_started_at=?, attempts=attempts+1, "
-            "last_error=NULL WHERE canonical_url=? AND status NOT IN (?,?)",
-            (PUBLISHING, draft, iso(now), canonical_url, PUBLISHED, PUBLISHING),
+            """
+            UPDATE articles
+            SET
+                bale_status='sending',
+                bale_started_at=?,
+                bale_attempts=bale_attempts+1,
+                bale_last_error=NULL
+            WHERE
+                canonical_url=?
+                AND status=?
+                AND fetched_at>=?
+                AND bale_attempts<?
+                AND (
+                    bale_status='pending'
+                    OR bale_status='failed'
+                )
+            """,
+            (
+                iso(current_time),
+                canonical_url,
+                PUBLISHED,
+                cutoff,
+                MAX_BALE_ATTEMPTS,
+            ),
         )
+
         return cur.rowcount == 1
 
-    def mark_published(self, canonical_url: str, message_id: Optional[int], now: Optional[datetime] = None) -> None:
+    def mark_bale_sent(
+        self,
+        canonical_url: str,
+        message_id: Optional[int],
+        now: Optional[datetime] = None,
+    ) -> None:
         self._run(
-            "UPDATE articles SET status=?, telegram_published_at=?, telegram_message_id=?, last_error=NULL "
-            "WHERE canonical_url=? AND status=?",
-            (PUBLISHED, iso(now), message_id, canonical_url, PUBLISHING),
+            """
+            UPDATE articles
+            SET
+                bale_status='sent',
+                bale_message_id=?,
+                bale_published_at=?,
+                bale_last_error=NULL
+            WHERE
+                canonical_url=?
+                AND bale_status='sending'
+            """,
+            (
+                message_id,
+                iso(now),
+                canonical_url,
+            ),
         )
 
-    def mark_failed(self, canonical_url: str, error: str) -> None:
-        """ارسال قطعاً انجام نشده است."""
-        self._run("UPDATE articles SET status=?, last_error=? WHERE canonical_url=? AND status=?",
-                  (FAILED, self._err(error), canonical_url, PUBLISHING))
+    def mark_bale_failed(
+        self,
+        canonical_url: str,
+        error: str,
+    ) -> None:
+        """ثبت شکست قطعی ارسال به بله."""
 
-    def mark_unknown(self, canonical_url: str, error: str) -> None:
-        """نامعلوم ماندن ارسال: وضعیت publishing می‌ماند و هرگز خودکار دوباره ارسال نمی‌شود."""
-        self._run("UPDATE articles SET last_error=? WHERE canonical_url=? AND status=?",
-                  (self._err("UNKNOWN_DELIVERY: " + error), canonical_url, PUBLISHING))
+        self._run(
+            """
+            UPDATE articles
+            SET
+                bale_status='failed',
+                bale_last_error=?
+            WHERE
+                canonical_url=?
+                AND bale_status='sending'
+            """,
+            (
+                self._err(error),
+                canonical_url,
+            ),
+        )
+
+    def mark_bale_unknown(
+        self,
+        canonical_url: str,
+        error: str,
+    ) -> None:
+        """ثبت وضعیت نامشخص؛ این وضعیت خودکار دوباره ارسال نمی‌شود."""
+
+        self._run(
+            """
+            UPDATE articles
+            SET
+                bale_status='unknown',
+                bale_last_error=?
+            WHERE
+                canonical_url=?
+                AND bale_status='sending'
+            """,
+            (
+                self._err(error),
+                canonical_url,
+            ),
+        )
+
+    # ---------- نوشتن ----------
+
+    def upsert_discovered(self, art: Article) -> None:
+        self._run(
+            """
+            INSERT INTO articles (
+                canonical_url,
+                url,
+                title,
+                source,
+                published_at,
+                fetched_at,
+                status
+            )
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(canonical_url) DO NOTHING
+            """,
+            (
+                art.canonical_url,
+                art.url,
+                art.title[:500],
+                art.source_name,
+                iso(art.published_at) if art.published_at else None,
+                iso(art.fetched_at),
+                DISCOVERED,
+            ),
+        )
+
+    def set_status(
+        self,
+        canonical_url: str,
+        status: str,
+        *,
+        score: Optional[float] = None,
+        draft: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """تغییر وضعیت؛ خبر published یا publishing تغییر نمی‌کند."""
+
+        self._run(
+            """
+            UPDATE articles
+            SET
+                status=?,
+                score=COALESCE(?,score),
+                draft=COALESCE(?,draft),
+                last_error=?
+            WHERE
+                canonical_url=?
+                AND status NOT IN (?,?)
+            """,
+            (
+                status,
+                score,
+                draft,
+                self._err(error),
+                canonical_url,
+                PUBLISHED,
+                PUBLISHING,
+            ),
+        )
+
+    def begin_publishing(
+        self,
+        canonical_url: str,
+        draft: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        cur = self._run(
+            """
+            UPDATE articles
+            SET
+                status=?,
+                draft=?,
+                publishing_started_at=?,
+                attempts=attempts+1,
+                last_error=NULL
+            WHERE
+                canonical_url=?
+                AND status NOT IN (?,?)
+            """,
+            (
+                PUBLISHING,
+                draft,
+                iso(now),
+                canonical_url,
+                PUBLISHED,
+                PUBLISHING,
+            ),
+        )
+
+        return cur.rowcount == 1
+
+    def mark_published(
+        self,
+        canonical_url: str,
+        message_id: Optional[int],
+        now: Optional[datetime] = None,
+        *,
+        bale_enabled: bool = False,
+    ) -> None:
+        """ثبت موفقیت تلگرام و در صورت فعال بودن بله، ثبت خبر در صف بله."""
+
+        self._run(
+            """
+            UPDATE articles
+            SET
+                status=?,
+                telegram_published_at=?,
+                telegram_message_id=?,
+                last_error=NULL,
+                bale_status=CASE
+                    WHEN ? THEN 'pending'
+                    ELSE bale_status
+                END
+            WHERE
+                canonical_url=?
+                AND status=?
+            """,
+            (
+                PUBLISHED,
+                iso(now),
+                message_id,
+                1 if bale_enabled else 0,
+                canonical_url,
+                PUBLISHING,
+            ),
+        )
+
+    def mark_failed(
+        self,
+        canonical_url: str,
+        error: str,
+    ) -> None:
+        """ثبت شکست قطعی تلگرام."""
+
+        self._run(
+            """
+            UPDATE articles
+            SET status=?, last_error=?
+            WHERE canonical_url=? AND status=?
+            """,
+            (
+                FAILED,
+                self._err(error),
+                canonical_url,
+                PUBLISHING,
+            ),
+        )
+
+    def mark_unknown(
+        self,
+        canonical_url: str,
+        error: str,
+    ) -> None:
+        """ارسال نامشخص تلگرام؛ وضعیت publishing حفظ می‌شود."""
+
+        self._run(
+            """
+            UPDATE articles
+            SET last_error=?
+            WHERE canonical_url=? AND status=?
+            """,
+            (
+                self._err("UNKNOWN_DELIVERY: " + error),
+                canonical_url,
+                PUBLISHING,
+            ),
+        )
