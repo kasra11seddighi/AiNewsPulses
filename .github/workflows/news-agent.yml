@@ -1,3 +1,4 @@
+
 name: News Agent
 
 on:
@@ -85,7 +86,25 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "Database unchanged."
-          else
-            git commit -m "Update news database"
-            git push
+            exit 0
           fi
+
+          git commit -m "Update news database"
+
+          for attempt in 1 2 3; do
+            echo "Push attempt $attempt"
+
+            git fetch origin main
+            git rebase origin/main
+
+            if git push origin HEAD:main; then
+              echo "Database successfully saved."
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          echo "Failed to push database after 3 attempts."
+          exit 1
+
