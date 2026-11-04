@@ -1,4 +1,3 @@
-
 name: News Agent
 
 on:
@@ -51,8 +50,14 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ vars.TELEGRAM_CHANNEL_ID }}
+
+          BALE_BOT_TOKEN: ${{ secrets.BALE_BOT_TOKEN }}
+          BALE_CHANNEL_ID: ${{ vars.BALE_CHANNEL_ID || '@AINewsD1' }}
+          ENABLE_BALE_PUBLISHING: ${{ vars.ENABLE_BALE_PUBLISHING || 'false' }}
+
           ENABLE_PUBLISHING: "true"
           DAILY_POST_LIMIT: "10"
           MAX_POSTS_PER_RUN: "1"
@@ -62,12 +67,11 @@ jobs:
           IMAGE_ALLOWED_DOMAINS: ""
           LOG_LEVEL: INFO
           TIMEZONE: Asia/Tehran
+
         run: python main.py
 
       - name: Save database
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           if [ ! -f data/ainewspulses.db ]; then
             echo "Database file not found; nothing to save."
